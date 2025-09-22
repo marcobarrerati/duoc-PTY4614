@@ -1,0 +1,36 @@
+@startuml C4_Container
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Sistema Unidad Territorial - Diagrama de Contenedores (Nivel 2)
+
+Person(user, "Usuario del Sistema", "Vecino, Dirigente Vecinal o Administrador")
+
+System_Boundary(gestion_system, "Sistema Unidad Territorial") {
+    Container(web_app, "Aplicación Web", "React + Vite + shadcn/ui", "Proporciona interface de usuario responsiva para gestión comunitaria")
+    ContainerDb(database, "Base de Datos", "PostgreSQL + Supabase", "Almacena información de vecinos, actividades, solicitudes con Row Level Security")
+    Container(auth_service, "Servicio de Autenticación", "Supabase Auth", "Maneja autenticación, autorización y gestión de sesiones")
+    Container(storage_service, "Servicio de Storage", "Supabase Storage", "Gestiona archivos, documentos y contenido multimedia")
+    Container(realtime_service, "Servicio Realtime", "Supabase Realtime", "Proporciona actualizaciones en tiempo real via WebSocket")
+    Container(edge_functions, "Edge Functions", "Deno Runtime", "Ejecuta lógica de negocio serverless e integraciones con APIs")
+}
+
+System_Ext(email_api, "SendGrid API", "Servicio de envío de emails")
+System_Ext(sms_api, "Twilio API", "Servicio de envío de SMS")
+System_Ext(maps_api, "Google Maps API", "Servicio de geocodificación")
+
+Rel(user, web_app, "Utiliza", "HTTPS")
+Rel(web_app, auth_service, "Autentica usuarios", "HTTPS/JWT")
+Rel(web_app, database, "Lee/Escribe datos", "PostgREST API")
+Rel(web_app, storage_service, "Sube/Descarga archivos", "HTTPS")
+Rel(web_app, realtime_service, "Recibe actualizaciones", "WebSocket")
+Rel(web_app, edge_functions, "Ejecuta funciones", "HTTPS")
+
+Rel(edge_functions, email_api, "Envía emails", "REST API")
+Rel(edge_functions, sms_api, "Envía SMS", "REST API")
+Rel(edge_functions, maps_api, "Valida direcciones", "REST API")
+
+Rel(auth_service, database, "Valida permisos", "RLS")
+Rel(realtime_service, database, "Escucha cambios", "PostgreSQL")
+
+SHOW_LEGEND()
+@enduml

@@ -1,0 +1,27 @@
+@startuml C4_Context
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title Sistema Unidad Territorial - Diagrama de Contexto (Nivel 1)
+
+Person(vecino, "Vecino", "Residente de la comunidad que participa en actividades vecinales y envía solicitudes")
+Person(dirigente, "Dirigente Vecinal", "Líder comunitario que gestiona la junta de vecinos y organiza actividades")
+Person(admin, "Administrador", "Gestiona el sistema, usuarios y configuraciones generales")
+
+System(gestion_vecinal, "Sistema Unidad Territorial", "Plataforma web para gestión comunitaria, comunicación vecinal y organización de actividades")
+
+System_Ext(sendgrid, "SendGrid", "Servicio de envío de emails y notificaciones masivas")
+System_Ext(twilio, "Twilio", "Servicio de mensajería SMS para comunicaciones urgentes")
+System_Ext(google_maps, "Google Maps API", "Servicio de geocodificación y validación de direcciones")
+System_Ext(supabase, "Supabase", "Backend-as-a-Service con PostgreSQL, autenticación y storage")
+
+Rel(vecino, gestion_vecinal, "Consulta actividades, envía solicitudes, participa en eventos")
+Rel(dirigente, gestion_vecinal, "Gestiona vecinos, organiza actividades, envía comunicaciones")
+Rel(admin, gestion_vecinal, "Administra sistema, configura parámetros, gestiona usuarios")
+
+Rel(gestion_vecinal, sendgrid, "Envía notificaciones y comunicaciones masivas")
+Rel(gestion_vecinal, twilio, "Envía SMS urgentes y alertas")
+Rel(gestion_vecinal, google_maps, "Valida y geocodifica direcciones")
+Rel(gestion_vecinal, supabase, "Almacena datos, autentica usuarios, gestiona archivos")
+
+SHOW_LEGEND()
+@enduml
