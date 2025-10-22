@@ -528,7 +528,7 @@ BEGIN
             comentario
         ) VALUES (
             NEW.id,
-            NEW.updated_by, -- Asumiendo que tienes este campo o lo pasas de alguna forma
+            NEW.revisado_por
             OLD.estado,
             NEW.estado,
             'Cambio automático de estado'
