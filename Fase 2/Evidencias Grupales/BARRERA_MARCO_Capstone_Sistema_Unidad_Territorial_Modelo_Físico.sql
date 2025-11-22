@@ -1,6 +1,7 @@
 -- ============================================
 -- MODELO LÓGICO - SISTEMA UNIDAD TERRITORIAL
 -- Base de Datos: PostgreSQL (Supabase)
+-- Autor: @marcobarrerati
 -- ============================================
 
 -- TABLA: perfiles
@@ -30,17 +31,6 @@ CREATE TABLE roles (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- TABLA: usuarios_roles
--- Relación muchos a muchos entre usuarios y roles
-CREATE TABLE usuarios_roles (
-    id SERIAL PRIMARY KEY,
-    perfil_id UUID REFERENCES perfiles(id) ON DELETE CASCADE,
-    rol_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
-    junta_vecinos_id INTEGER REFERENCES juntas_vecinos(id) ON DELETE CASCADE,
-    fecha_asignacion TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(perfil_id, rol_id, junta_vecinos_id)
-);
-
 -- TABLA: juntas_vecinos
 -- Información de las juntas de vecinos
 CREATE TABLE juntas_vecinos (
@@ -60,6 +50,18 @@ CREATE TABLE juntas_vecinos (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- TABLA: usuarios_roles
+-- Relación muchos a muchos entre usuarios y roles
+CREATE TABLE usuarios_roles (
+    id SERIAL PRIMARY KEY,
+    perfil_id UUID REFERENCES perfiles(id) ON DELETE CASCADE,
+    rol_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
+    junta_vecinos_id INTEGER REFERENCES juntas_vecinos(id) ON DELETE CASCADE,
+    fecha_asignacion TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(perfil_id, rol_id, junta_vecinos_id)
+);
+
+
 
 -- TABLA: miembros_junta
 -- Registro de vecinos miembros de la junta
@@ -69,13 +71,28 @@ CREATE TABLE miembros_junta (
     junta_vecinos_id INTEGER REFERENCES juntas_vecinos(id) ON DELETE CASCADE,
     fecha_inscripcion DATE NOT NULL DEFAULT CURRENT_DATE,
     numero_socio VARCHAR(20),
-    estado VARCHAR(20) DEFAULT 'activo' CHECK (estado IN ('activo', 'inactivo', 'retirado')),
+    estado VARCHAR(20) DEFAULT 'pendiente' CHECK (estado IN ('pendiente','activo', 'inactivo', 'retirado')),
     motivo_retiro TEXT,
     fecha_retiro DATE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(perfil_id, junta_vecinos_id)
 );
+
+-- TABLA: historial_miembros_junta
+-- Historial de cambios en el estado de los miembros de la junta
+CREATE TABLE historial_miembros_junta (
+    id SERIAL PRIMARY KEY,
+    miembro_junta_id INTEGER REFERENCES miembros_junta(id) ON DELETE CASCADE,
+    estado_anterior VARCHAR(20),
+    estado_nuevo VARCHAR(20) NOT NULL,
+    motivo TEXT,
+    modificado_por UUID REFERENCES perfiles(id),
+    observaciones TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
 
 -- TABLA: directiva
 -- Composición de la directiva de la junta
@@ -466,6 +483,10 @@ CREATE INDEX idx_auditorias_usuario ON auditorias(usuario_id);
 CREATE INDEX idx_auditorias_tabla ON auditorias(tabla_afectada);
 CREATE INDEX idx_auditorias_fecha ON auditorias(created_at);
 
+CREATE INDEX idx_historial_miembros_miembro ON historial_miembros_junta(miembro_junta_id);
+CREATE INDEX idx_historial_miembros_fecha ON historial_miembros_junta(created_at);
+
+
 -- ============================================
 -- FUNCIONES Y TRIGGERS
 -- ============================================
@@ -515,33 +536,7 @@ CREATE TRIGGER trigger_noticias_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION actualizar_updated_at();
 
--- Función para registrar seguimiento de solicitudes
-CREATE OR REPLACE FUNCTION registrar_seguimiento_solicitud()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF (TG_OP = 'UPDATE' AND OLD.estado IS DISTINCT FROM NEW.estado) THEN
-        INSERT INTO seguimiento_solicitudes (
-            solicitud_id,
-            usuario_id,
-            estado_anterior,
-            estado_nuevo,
-            comentario
-        ) VALUES (
-            NEW.id,
-            NEW.updated_by, -- Asumiendo que tienes este campo o lo pasas de alguna forma
-            OLD.estado,
-            NEW.estado,
-            'Cambio automático de estado'
-        );
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trigger_seguimiento_solicitudes
-    AFTER UPDATE ON solicitudes
-    FOR EACH ROW
-    EXECUTE FUNCTION registrar_seguimiento_solicitud();
 
 -- Función para actualizar cupos ocupados en actividades
 CREATE OR REPLACE FUNCTION actualizar_cupos_actividad()
@@ -611,3 +606,281 @@ INSERT INTO tipos_notificacion (nombre, plantilla_titulo, plantilla_contenido, c
     ('Nueva Actividad', 'Nueva actividad disponible', 'Se ha publicado una nueva actividad: {nombre_actividad}', ARRAY['email', 'push']),
     ('Recordatorio Actividad', 'Recordatorio de actividad', 'Recordatorio: Tienes una actividad programada', ARRAY['email', 'sms', 'push']),
     ('Aviso General', 'Nuevo aviso de la junta', 'Se ha publicado un nuevo aviso', ARRAY['email', 'push']);
+
+
+
+-- ============================================
+-- TRIGGER: CREACIÓN AUTOMÁTICA DE PERFIL AL REGISTRAR USUARIO EN AUTH.USERS
+-- ============================================
+-- CREAR PERFIL 
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.perfiles (
+    id,
+    rut,
+    nombres,
+    apellido_paterno,
+    apellido_materno,
+    fecha_nacimiento, 
+    email, 
+    foto_perfil_url
+  )
+  VALUES (
+    NEW.id,
+    (SELECT CAST(COUNT(*) + 1 AS TEXT) FROM public.perfiles),
+    COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
+    COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
+    COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
+    NOW(),
+    NEW.email,
+    COALESCE(NEW.raw_user_meta_data->>'avatar_url', '')
+  );
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- Trigger para ejecutar la función
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+
+
+
+
+
+--
+--
+-- TRIGGER: HISTORIAL DE CAMBIOS EN MIEMBROS_JUNTA
+-- ============================================
+--
+-- Función y trigger para registrar cambios de estado en miembros_junta
+CREATE OR REPLACE FUNCTION registrar_cambio_estado_miembro()
+RETURNS TRIGGER AS $$
+DECLARE
+    usuario_actual UUID;
+BEGIN
+    -- Obtener el usuario autenticado de Supabase
+    usuario_actual := auth.uid();
+
+    IF (TG_OP = 'UPDATE' AND OLD.estado IS DISTINCT FROM NEW.estado) THEN
+        INSERT INTO historial_miembros_junta (
+            miembro_junta_id,
+            estado_anterior,
+            estado_nuevo,
+            motivo,
+            modificado_por,
+            observaciones
+        ) VALUES (
+            NEW.id,
+            OLD.estado,
+            NEW.estado,
+            NEW.motivo_retiro,
+            usuario_actual,
+            'Cambio automático de estado'
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE TRIGGER trigger_historial_miembros
+    AFTER UPDATE ON miembros_junta
+    FOR EACH ROW
+    EXECUTE FUNCTION registrar_cambio_estado_miembro();
+
+--
+--
+-- 
+-- ============================================
+-- TRIGGER: SINCRONIZACIÓN DIRECTIVA → USUARIOS_ROLES
+-- ============================================
+--
+-- Función: Sincronizar roles cuando cambia la directiva
+CREATE OR REPLACE FUNCTION sincronizar_rol_directiva()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_perfil_id UUID;
+    v_rol_id INTEGER;
+BEGIN
+    -- Obtener perfil_id del miembro
+    SELECT perfil_id INTO v_perfil_id
+    FROM miembros_junta
+    WHERE id = NEW.miembro_id;
+    
+    -- Obtener rol_id correspondiente al cargo
+    SELECT id INTO v_rol_id
+    FROM roles
+    WHERE nombre = NEW.cargo;
+    
+    -- Validar que existan los datos
+    IF v_perfil_id IS NULL THEN
+        RAISE EXCEPTION 'No se encontró el perfil del miembro con id %', NEW.miembro_id;
+    END IF;
+    
+    IF v_rol_id IS NULL THEN
+        RAISE EXCEPTION 'No existe el rol % en la tabla roles', NEW.cargo;
+    END IF;
+    
+    -- CASO 1: INSERT - Asignar nuevo cargo en directiva
+    IF (TG_OP = 'INSERT' AND NEW.estado = 'activo') THEN
+        -- Crear o actualizar rol en usuarios_roles
+        INSERT INTO usuarios_roles (perfil_id, rol_id, junta_vecinos_id, fecha_asignacion)
+        VALUES (v_perfil_id, v_rol_id, NEW.junta_vecinos_id, NEW.fecha_inicio)
+        ON CONFLICT (perfil_id, rol_id, junta_vecinos_id) 
+        DO UPDATE SET fecha_asignacion = NEW.fecha_inicio;
+        
+        RAISE NOTICE 'Rol % asignado a perfil % en junta %', NEW.cargo, v_perfil_id, NEW.junta_vecinos_id;
+    
+    -- CASO 2: UPDATE - Cambio de estado activo → finalizado
+    ELSIF (TG_OP = 'UPDATE' AND OLD.estado = 'activo' AND NEW.estado = 'finalizado') THEN
+        -- Eliminar rol cuando termina el periodo
+        DELETE FROM usuarios_roles
+        WHERE perfil_id = v_perfil_id
+        AND rol_id = v_rol_id
+        AND junta_vecinos_id = NEW.junta_vecinos_id;
+        
+        RAISE NOTICE 'Rol % removido de perfil % en junta %', NEW.cargo, v_perfil_id, NEW.junta_vecinos_id;
+    
+    -- CASO 3: UPDATE - Cambio de estado finalizado → activo (reactivación)
+    ELSIF (TG_OP = 'UPDATE' AND OLD.estado = 'finalizado' AND NEW.estado = 'activo') THEN
+        -- Volver a crear el rol
+        INSERT INTO usuarios_roles (perfil_id, rol_id, junta_vecinos_id, fecha_asignacion)
+        VALUES (v_perfil_id, v_rol_id, NEW.junta_vecinos_id, NEW.fecha_inicio)
+        ON CONFLICT (perfil_id, rol_id, junta_vecinos_id) 
+        DO UPDATE SET fecha_asignacion = NEW.fecha_inicio;
+        
+        RAISE NOTICE 'Rol % reactivado para perfil % en junta %', NEW.cargo, v_perfil_id, NEW.junta_vecinos_id;
+    
+    -- CASO 4: UPDATE - Cambio de cargo (ej: de secretario a presidente)
+    ELSIF (TG_OP = 'UPDATE' AND OLD.cargo != NEW.cargo AND NEW.estado = 'activo') THEN
+        DECLARE
+            v_old_rol_id INTEGER;
+        BEGIN
+            -- Obtener el rol anterior
+            SELECT id INTO v_old_rol_id
+            FROM roles
+            WHERE nombre = OLD.cargo;
+            
+            -- Eliminar el rol anterior
+            DELETE FROM usuarios_roles
+            WHERE perfil_id = v_perfil_id
+            AND rol_id = v_old_rol_id
+            AND junta_vecinos_id = NEW.junta_vecinos_id;
+            
+            -- Crear el nuevo rol
+            INSERT INTO usuarios_roles (perfil_id, rol_id, junta_vecinos_id, fecha_asignacion)
+            VALUES (v_perfil_id, v_rol_id, NEW.junta_vecinos_id, NOW())
+            ON CONFLICT (perfil_id, rol_id, junta_vecinos_id) 
+            DO UPDATE SET fecha_asignacion = NOW();
+            
+            RAISE NOTICE 'Cambio de cargo: % → % para perfil % en junta %', 
+                OLD.cargo, NEW.cargo, v_perfil_id, NEW.junta_vecinos_id;
+        END;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Crear el trigger
+CREATE TRIGGER trigger_sincronizar_rol_directiva
+    AFTER INSERT OR UPDATE ON directiva
+    FOR EACH ROW
+    EXECUTE FUNCTION sincronizar_rol_directiva();
+
+-- ============================================
+-- TRIGGER ADICIONAL: LIMPIAR ROLES AL ELIMINAR DIRECTIVA
+-- ============================================
+
+CREATE OR REPLACE FUNCTION limpiar_rol_directiva_eliminada()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_perfil_id UUID;
+    v_rol_id INTEGER;
+BEGIN
+    -- Obtener perfil_id del miembro
+    SELECT perfil_id INTO v_perfil_id
+    FROM miembros_junta
+    WHERE id = OLD.miembro_id;
+    
+    -- Obtener rol_id correspondiente al cargo
+    SELECT id INTO v_rol_id
+    FROM roles
+    WHERE nombre = OLD.cargo;
+    
+    -- Eliminar rol de usuarios_roles
+    DELETE FROM usuarios_roles
+    WHERE perfil_id = v_perfil_id
+    AND rol_id = v_rol_id
+    AND junta_vecinos_id = OLD.junta_vecinos_id;
+    
+    RAISE NOTICE 'Rol % eliminado de perfil % en junta % (directiva eliminada)', 
+        OLD.cargo, v_perfil_id, OLD.junta_vecinos_id;
+    
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_limpiar_rol_directiva
+    AFTER DELETE ON directiva
+    FOR EACH ROW
+    EXECUTE FUNCTION limpiar_rol_directiva_eliminada();
+
+-- ============================================
+-- ÍNDICE ADICIONAL PARA OPTIMIZACIÓN
+-- ============================================
+
+CREATE INDEX IF NOT EXISTS idx_directiva_miembro_cargo_estado 
+ON directiva(miembro_id, cargo, estado);
+
+-- ============================================
+-- SCRIPT DE VERIFICACIÓN
+-- ============================================
+
+-- Ver los triggers creados
+SELECT 
+    trigger_name,
+    event_manipulation,
+    action_timing,
+    action_statement
+FROM information_schema.triggers
+WHERE event_object_table = 'directiva'
+ORDER BY trigger_name;
+
+-- Función para verificar sincronización
+CREATE OR REPLACE FUNCTION verificar_sincronizacion_directiva()
+RETURNS TABLE (
+    perfil_nombre TEXT,
+    cargo VARCHAR(50),
+    junta_nombre VARCHAR(200),
+    estado_directiva VARCHAR(20),
+    tiene_rol_sistema BOOLEAN
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        p.nombres || ' ' || p.apellido_paterno AS perfil_nombre,
+        d.cargo,
+        jv.nombre AS junta_nombre,
+        d.estado AS estado_directiva,
+        EXISTS (
+            SELECT 1 FROM usuarios_roles ur
+            JOIN roles r ON ur.rol_id = r.id
+            WHERE ur.perfil_id = mj.perfil_id
+            AND r.nombre = d.cargo
+            AND ur.junta_vecinos_id = d.junta_vecinos_id
+        ) AS tiene_rol_sistema
+    FROM directiva d
+    JOIN miembros_junta mj ON d.miembro_id = mj.id
+    JOIN perfiles p ON mj.perfil_id = p.id
+    JOIN juntas_vecinos jv ON d.junta_vecinos_id = jv.id
+    ORDER BY jv.nombre, d.cargo;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Ejecutar verificación
+-- SELECT * FROM verificar_sincronizacion_directiva();
+-- INSERT INTO directiva (junta_vecinos_id, miembro_id, cargo, fecha_inicio, estado) VALUES (1, 13, 'presidente', '2025-11-02', 'activo');
